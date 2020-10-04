@@ -74,7 +74,7 @@ async function fetchAndIndexLogEvents<T extends ParsedEvent>(logGroupName: strin
     }).promise()
 
     const events = logEventsResponse.events ?? []
-    console.log(events.length)
+    console.log(`Received ${events.length} events from CloudWatch`)
 
     if (events.length > 0) {
       await indexEvents(`logs-${logGroupName}`, logGroupName, logStreamName, events, parseEvent)
@@ -106,18 +106,14 @@ async function indexEvents<T extends ParsedEvent>(indexName: string, logGroupNam
 }
 
 async function sendBulk(commands: string[]): Promise<void> {
-  const data = commands.join("")
-  console.log(data.slice(0, 100))
-
-  const response = await elasticsearch.request({
+  await elasticsearch.request({
     method: "POST",
     url: `/_bulk`,
-    data: Buffer.from(data),
+    data: Buffer.from(commands.join("")),
     headers: {
       "Content-Type": "application/x-ndjson"
     }
   })
-  console.log(JSON.stringify(response.data, null, 2))
 }
 
 async function ensureIndexExists(name: string): Promise<void> {
@@ -128,7 +124,7 @@ async function ensureIndexExists(name: string): Promise<void> {
     })
     console.log(response.data)
   } catch (err) {
-    console.log(err.response.data)
+    console.error(err.response.data)
   }
   try {
     const response = await elasticsearch.request({
@@ -139,10 +135,10 @@ async function ensureIndexExists(name: string): Promise<void> {
   } catch (err) {
     const { data } = err.response
     if (data.error.type !== 'resource_already_exists_exception') {
-      console.log(data)
+      console.error(data)
       throw err
     }
   }
 }
 
-main().catch(err => console.error(err))
+main()
