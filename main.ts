@@ -1,0 +1,148 @@
+import * as CloudWatchLogs from "aws-sdk/clients/cloudwatchlogs"
+import axios from "axios"
+
+const SECOND = 1000
+const MINUTE = 60 * SECOND
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+
+const logs = new CloudWatchLogs()
+const elasticsearch = axios.create({ baseURL: "http://localhost:9200/" })
+const kibana = axios.create({ baseURL: "http://localhost:5601/api" })
+
+async function main(): Promise<void> {
+  try {
+    await createKibanaIndexPattern("logs", {
+      title: "logs-*",
+      timeFieldName: "@timestamp"
+    })
+
+    await indexLogGroup(`discord-prod-bot`, (e: CloudWatchLogs.OutputLogEvent) => {
+      // Log events look like this:
+      // 2020-10-04 07:56:05,703 INFO FEED Checking feeds
+      const [date, time, level, module, ...rest] = (e.message || "").split(" ")
+      return {
+        "@timestamp": new Date(e.timestamp!),
+        date, time, level, module,
+        message: rest.join(" ")
+      }
+    })
+  } catch (err) {
+    console.error("ERROR")
+    if (err.response) {
+      console.error(JSON.stringify(err.response.data, null, 2))
+    } else {
+      console.error(err)
+    }
+  }
+}
+
+async function indexLogGroup<T extends ParsedEvent>(logGroupName: string, parseEvent: EventParser<T>): Promise<void> {
+  await ensureIndexExists(`logs-${logGroupName}`)
+
+  const streams = await logs.describeLogStreams({ logGroupName }).promise()
+  for (const s of streams.logStreams ?? []) {
+    const from = Date.now() - (2 * DAY)
+    await fetchAndIndexLogEvents(logGroupName, s.logStreamName!, from, parseEvent)
+  }
+}
+
+type KibanaPatternConfig = {
+  title: string
+  timeFieldName: string
+}
+
+async function createKibanaIndexPattern(id: string, config: KibanaPatternConfig): Promise<void> {
+  await kibana.request({
+    method: "POST",
+    url: `/saved_objects/index-pattern/${id}?overwrite=true`,
+    data: JSON.stringify({ attributes: config }),
+    headers: {
+      "Content-Type": "application/json",
+      "kbn-xsrf": "true"
+    }
+  })
+}
+
+async function fetchAndIndexLogEvents<T extends ParsedEvent>(logGroupName: string, logStreamName: string, startTime: number, parseEvent: EventParser<T>, nextToken?: string): Promise<void> {
+    const logEventsResponse = await logs.getLogEvents({
+      logGroupName,
+      logStreamName,
+      startTime,
+      nextToken,
+      startFromHead: true,
+    }).promise()
+
+    const events = logEventsResponse.events ?? []
+    console.log(events.length)
+
+    if (events.length > 0) {
+      await indexEvents(`logs-${logGroupName}`, logGroupName, logStreamName, events, parseEvent)
+    }
+
+    if (logEventsResponse.nextForwardToken !== nextToken) {
+      await fetchAndIndexLogEvents(logGroupName, logStreamName, startTime, parseEvent, logEventsResponse.nextForwardToken)
+    }
+}
+
+type ParsedEvent = {
+  "@timestamp": Date
+}
+
+type EventParser<T extends ParsedEvent> = (e: CloudWatchLogs.OutputLogEvent) => T
+
+async function indexEvents<T extends ParsedEvent>(indexName: string, logGroupName: string, logStreamName: string, events: CloudWatchLogs.OutputLogEvents, parseEvent: EventParser<T>): Promise<void> {
+  const commands = events.map(e => {
+    const command = JSON.stringify({ index: { _index: indexName, _type: "_doc" } })
+    const content = JSON.stringify({
+      ...e,
+      "@loggroup": logGroupName,
+      "@logstream": logStreamName,
+      ...parseEvent(e),
+    })
+    return command + "\n" + content + "\n"
+  })
+  await sendBulk(commands)
+}
+
+async function sendBulk(commands: string[]): Promise<void> {
+  const data = commands.join("")
+  console.log(data.slice(0, 100))
+
+  const response = await elasticsearch.request({
+    method: "POST",
+    url: `/_bulk`,
+    data: Buffer.from(data),
+    headers: {
+      "Content-Type": "application/x-ndjson"
+    }
+  })
+  console.log(JSON.stringify(response.data, null, 2))
+}
+
+async function ensureIndexExists(name: string): Promise<void> {
+  try {
+    const response = await elasticsearch.request({
+      method: `DELETE`,
+      url: `/${name}`,
+    })
+    console.log(response.data)
+  } catch (err) {
+    console.log(err.response.data)
+  }
+  try {
+    const response = await elasticsearch.request({
+      method: `PUT`,
+      url: `/${name}`,
+    })
+    console.log(response.data)
+  } catch (err) {
+    const { data } = err.response
+    if (data.error.type !== 'resource_already_exists_exception') {
+      console.log(data)
+      throw err
+    }
+  }
+}
+
+main().catch(err => console.error(err))
