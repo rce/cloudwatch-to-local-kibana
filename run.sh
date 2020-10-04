@@ -11,8 +11,6 @@ function main {
   source "$repo/nvm.sh"
   nvm install "14.12.0" || nvm use "14.12.0"
 
-  AWS_PROFILE="discord-prod" \
-  AWS_REGION="eu-west-1" \
   npx ts-node main.ts
 }
 

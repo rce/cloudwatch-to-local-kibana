@@ -1,3 +1,5 @@
+import {config, EventParser, ParsedEvent} from "./config"
+
 import * as CloudWatchLogs from "aws-sdk/clients/cloudwatchlogs"
 import axios from "axios"
 
@@ -17,16 +19,9 @@ async function main(): Promise<void> {
       timeFieldName: "@timestamp"
     })
 
-    await indexLogGroup(`discord-prod-bot`, (e: CloudWatchLogs.OutputLogEvent) => {
-      // Log events look like this:
-      // 2020-10-04 07:56:05,703 INFO FEED Checking feeds
-      const [date, time, level, module, ...rest] = (e.message || "").split(" ")
-      return {
-        "@timestamp": new Date(e.timestamp!),
-        date, time, level, module,
-        message: rest.join(" ")
-      }
-    })
+    for (const {logGroupName, eventParser} of config.logGroups) {
+      await indexLogGroup(logGroupName, eventParser)
+    }
   } catch (err) {
     console.error("ERROR")
     if (err.response) {
@@ -84,12 +79,6 @@ async function fetchAndIndexLogEvents<T extends ParsedEvent>(logGroupName: strin
       await fetchAndIndexLogEvents(logGroupName, logStreamName, startTime, parseEvent, logEventsResponse.nextForwardToken)
     }
 }
-
-type ParsedEvent = {
-  "@timestamp": Date
-}
-
-type EventParser<T extends ParsedEvent> = (e: CloudWatchLogs.OutputLogEvent) => T
 
 async function indexEvents<T extends ParsedEvent>(indexName: string, logGroupName: string, logStreamName: string, events: CloudWatchLogs.OutputLogEvents, parseEvent: EventParser<T>): Promise<void> {
   const commands = events.map(e => {
