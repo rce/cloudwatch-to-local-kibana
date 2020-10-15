@@ -15,6 +15,7 @@ function main {
   source "$repo/nvm.sh"
   nvm install "14.12.0" || nvm use "14.12.0"
 
+  npm ci
   npx ts-node main.ts
 }
 
